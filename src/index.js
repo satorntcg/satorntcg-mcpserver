@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import './env.js'; // must be the first import — see src/env.js for why
 import { initTracing } from './tracing.js';
 
 initTracing(); // no-op until OTel is activated — see src/tracing.js
@@ -29,9 +29,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
     };
   } catch (err) {
+    // err.cause carries the real underlying reason (e.g. ETIMEDOUT, ENOTFOUND,
+    // ECONNREFUSED) when a fetch fails — the top-level message alone is just
+    // the generic "fetch failed" and hides what actually happened.
+    const causeDetail = err.cause
+      ? ` | cause: ${err.cause.code ?? ''} ${err.cause.message ?? err.cause}`
+      : '';
+    console.error(`Tool error in ${tool.name}:`, err.message, causeDetail, err.cause);
     return {
       isError: true,
-      content: [{ type: 'text', text: `Error running ${tool.name}: ${err.message}` }],
+      content: [{ type: 'text', text: `Error running ${tool.name}: ${err.message}${causeDetail}` }],
     };
   }
 });

@@ -2,6 +2,7 @@ import { getPriceAlertsTool } from './priceAlerts.js';
 import { getInventorySummaryTool, getLatestPricesTool } from './inventory.js';
 import { getBoxPnlTool, getGlobalPnlTool } from './pnl.js';
 import { getEbayListingsTool } from './listings.js';
+import { debugNetworkTool } from './debugNetwork.js';
 
 // Add new tools here — this is the single place that wires a tool definition
 // into the running server.
@@ -12,4 +13,5 @@ export const tools = [
   getBoxPnlTool,
   getGlobalPnlTool,
   getEbayListingsTool,
+  debugNetworkTool, // TEMPORARY — remove once fetch-failed issue is resolved
 ];
