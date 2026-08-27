@@ -1,0 +1,17 @@
+{
+  "name": "satorntcg-mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server exposing SatornTCG inventory, pricing, and P&L data as tools for LLM clients (Claude Desktop, Claude Code, etc.)",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "@supabase/supabase-js": "^2.45.4",
+    "dotenv": "^16.4.5"
+  }
+}
