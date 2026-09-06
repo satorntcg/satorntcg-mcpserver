@@ -2,6 +2,7 @@ import { getPriceAlertsTool } from './priceAlerts.js';
 import { getInventorySummaryTool, getLatestPricesTool } from './inventory.js';
 import { getBoxPnlTool, getGlobalPnlTool } from './pnl.js';
 import { getEbayListingsTool } from './listings.js';
+import { getTcgplayerOrdersTool, createTcgplayerOrderTool } from './tcgplayerOrders.js';
 import { debugNetworkTool } from './debugNetwork.js';
 
 // Add new tools here — this is the single place that wires a tool definition
@@ -13,5 +14,7 @@ export const tools = [
   getBoxPnlTool,
   getGlobalPnlTool,
   getEbayListingsTool,
+  getTcgplayerOrdersTool,
+  createTcgplayerOrderTool,
   debugNetworkTool, // TEMPORARY — remove once fetch-failed issue is resolved
 ];
