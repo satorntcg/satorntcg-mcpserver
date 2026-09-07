@@ -41,7 +41,7 @@ export const getTcgplayerOrdersTool = {
 export const createTcgplayerOrderTool = {
   name: 'create_tcgplayer_order',
   description:
-    'Create a TCGplayer order and its line items, matching each line item to a card by exact name (foil printings are matched literally, e.g. "Sinterfee (Foil)" — do not strip "(Foil)" from card_name_raw). Safe to re-run: if order_number already exists, the call is a no-op and no items are inserted, so the same parsed email can be submitted more than once without creating duplicates.',
+    'Create a TCGplayer order and its line items, matching each line item to a card by exact name (foil printings are matched literally, e.g. "Sinterfee (Foil)" — do not strip "(Foil)" from card_name_raw). Also creates a matching "active" listing in tcgplayer_listings (same shape the dashboard\'s manual "create listing" flow produces), so it shows up to be packaged and can be flipped to "sold" from the dashboard once shipped. Safe to re-run: if order_number already exists, the call is a no-op — no items or listing are (re-)created — so the same parsed email can be submitted more than once without creating duplicates.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -116,10 +116,86 @@ export const createTcgplayerOrderTool = {
       .select();
     if (itemsError) throw new Error(itemsError.message);
 
-    return {
-      order: inserted,
-      items: insertedItems,
-      unmatched: insertedItems.filter((i) => !i.card_id).map((i) => i.card_name_raw),
-    };
+    const unmatched = insertedItems.filter((i) => !i.card_id).map((i) => i.card_name_raw);
+    const listing = await createListingForOrder({ order: inserted, items: insertedItems });
+
+    return { order: inserted, items: insertedItems, unmatched, listing };
   },
 };
+
+// Mirrors the dashboard's manual "create listing" flow (Tcgplayerlistings.jsx CreateModal):
+// a single matched card at quantity 1 gets its own listing with card_id set directly;
+// anything else (multiple cards, or one card with quantity > 1) becomes a card_id-less
+// "lot" whose members live in tcgplayer_listing_cards instead. cost_basis is deliberately
+// left null here too — the dashboard only computes it live when the listing is marked sold,
+// so it stays accurate as of the actual sale date rather than order-capture time.
+async function createListingForOrder({ order, items }) {
+  const linkable = items.filter((i) => i.card_id);
+  if (linkable.length === 0) return null;
+
+  const totalQty = linkable.reduce((sum, i) => sum + i.quantity, 0);
+  const uniqueCardIds = [...new Set(linkable.map((i) => i.card_id))];
+  const isSingleCard = uniqueCardIds.length === 1 && totalQty === 1;
+
+  const { data: cardDetails, error: cardDetailsError } = await supabase
+    .from('cards')
+    .select('id, name, set_name')
+    .in('id', uniqueCardIds);
+  if (cardDetailsError) throw new Error(cardDetailsError.message);
+  const cardById = Object.fromEntries((cardDetails ?? []).map((c) => [c.id, c]));
+
+  const condition = linkable[0].condition ?? 'Near Mint';
+  const title = isSingleCard
+    ? `${cardById[uniqueCardIds[0]].name} — Sorcery TCG${
+        cardById[uniqueCardIds[0]].set_name ? ` ${cardById[uniqueCardIds[0]].set_name}` : ''
+      } — ${condition}`
+    : `Sorcery TCG Lot — ${totalQty} Cards`;
+
+  const { data: newListing, error: listingError } = await supabase
+    .from('tcgplayer_listings')
+    .insert({
+      card_id: isSingleCard ? uniqueCardIds[0] : null,
+      title,
+      listed_price: order.order_total ?? 0,
+      // Cheap orders ship first-class stamp rate; $20+ bumps to padded-envelope/priority.
+      shipping_cost: (order.order_total ?? 0) < 20 ? 0.82 : 5.5,
+      condition,
+      quantity: 1,
+      notes: `Auto-created from TCGplayer order ${order.order_number}`,
+      tcgplayer_url: order.manage_order_url ?? null,
+      status: 'active',
+      ...(order.ordered_at ? { listed_at: order.ordered_at } : {}),
+    })
+    .select()
+    .single();
+  if (listingError) throw new Error(listingError.message);
+
+  const perCardPrice =
+    order.order_total != null && totalQty > 0 ? parseFloat((order.order_total / totalQty).toFixed(2)) : 0;
+  const { error: listingCardsError } = await supabase.from('tcgplayer_listing_cards').insert(
+    linkable.map((i) => ({
+      listing_id: newListing.id,
+      card_id: i.card_id,
+      price: perCardPrice,
+      quantity: i.quantity,
+    }))
+  );
+  if (listingCardsError) throw new Error(listingCardsError.message);
+
+  // Mirrors CreateModal's quantity_listed bump, keeping "what's reserved for sale" accurate.
+  for (const i of linkable) {
+    const { data: cardRow, error: cardRowError } = await supabase
+      .from('cards')
+      .select('quantity_listed')
+      .eq('id', i.card_id)
+      .single();
+    if (cardRowError) throw new Error(cardRowError.message);
+    const { error: updateError } = await supabase
+      .from('cards')
+      .update({ quantity_listed: (cardRow.quantity_listed ?? 0) + i.quantity })
+      .eq('id', i.card_id);
+    if (updateError) throw new Error(updateError.message);
+  }
+
+  return newListing;
+}
