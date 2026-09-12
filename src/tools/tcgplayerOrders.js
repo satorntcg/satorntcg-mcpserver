@@ -41,7 +41,7 @@ export const getTcgplayerOrdersTool = {
 export const createTcgplayerOrderTool = {
   name: 'create_tcgplayer_order',
   description:
-    'Create a TCGplayer order and its line items, matching each line item to a card by exact name (foil printings are matched literally, e.g. "Sinterfee (Foil)" — do not strip "(Foil)" from card_name_raw). Also creates a matching "active" listing in tcgplayer_listings (same shape the dashboard\'s manual "create listing" flow produces), so it shows up to be packaged and can be flipped to "sold" from the dashboard once shipped. Safe to re-run: if order_number already exists, the call is a no-op — no items or listing are (re-)created — so the same parsed email can be submitted more than once without creating duplicates.',
+    'Create a TCGplayer order and its line items, matching each line item to a card by exact name (foil printings are matched literally, e.g. "Sinterfee (Foil)" — do not strip "(Foil)" from card_name_raw). Also creates a matching "active" listing in tcgplayer_listings (same shape the dashboard\'s manual "create listing" flow produces: quantity_listed bumped, no sold_price/fee/cost_basis/net_profit/quantity_owned changes yet) — even though the order email means TCGplayer already has a committed buyer, these are booked as placeholders on file and finalized later through the existing chat-based "mark sold" flow once the packing slip is printed and the order actually ships. Safe to re-run: if order_number already exists, the call is a no-op — no items or listing are (re-)created. Also guards against duplicating a sale recorded another way: if any of this order\'s cards already has a tcgplayer_listings row (manual or order-derived) within 3 days of the order date, listing creation is skipped (the order/items are still recorded) and the response says which existing listing to check — if it\'s genuinely a separate sale, add the listing by hand.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -123,12 +123,61 @@ export const createTcgplayerOrderTool = {
   },
 };
 
+// Guards against recreating a sale that's already recorded: a card sold via the dashboard's
+// manual flow and the same card's order email arriving through this tool both represent the
+// same real-world sale, and nothing else ties them together. If any existing tcgplayer_listings
+// row (manual or order-derived, active or sold) touches one of this order's cards within a few
+// days of the order date, we treat it as the same sale rather than risk a duplicate — this is
+// exactly the pattern that produced ~100 duplicate listings when historical orders were
+// backfilled against already-recorded manual sales. Erring toward skipping (and leaving the
+// order recorded but listing-less for manual review) is the safe direction: a missed auto-listing
+// costs a manual click, a duplicate silently inflates revenue/profit/COGS.
+const DUPLICATE_WINDOW_MS = 1000 * 60 * 60 * 24 * 3;
+
+async function findPossibleDuplicateListing(cardIds, referenceDate) {
+  const refTime = new Date(referenceDate).getTime();
+
+  const { data: direct, error: directError } = await supabase
+    .from('tcgplayer_listings')
+    .select('id, listed_at, sold_at')
+    .in('card_id', cardIds);
+  if (directError) throw new Error(directError.message);
+
+  const { data: junctionRows, error: junctionError } = await supabase
+    .from('tcgplayer_listing_cards')
+    .select('listing_id')
+    .in('card_id', cardIds);
+  if (junctionError) throw new Error(junctionError.message);
+
+  const junctionListingIds = [...new Set((junctionRows ?? []).map((j) => j.listing_id))];
+  let viaJunction = [];
+  if (junctionListingIds.length > 0) {
+    const { data, error } = await supabase
+      .from('tcgplayer_listings')
+      .select('id, listed_at, sold_at')
+      .in('id', junctionListingIds);
+    if (error) throw new Error(error.message);
+    viaJunction = data ?? [];
+  }
+
+  const candidates = new Map();
+  for (const row of [...(direct ?? []), ...viaJunction]) candidates.set(row.id, row);
+
+  for (const row of candidates.values()) {
+    const dates = [row.sold_at, row.listed_at].filter(Boolean);
+    if (dates.some((d) => Math.abs(new Date(d).getTime() - refTime) <= DUPLICATE_WINDOW_MS)) {
+      return row.id;
+    }
+  }
+  return null;
+}
+
 // Mirrors the dashboard's manual "create listing" flow (Tcgplayerlistings.jsx CreateModal):
-// a single matched card at quantity 1 gets its own listing with card_id set directly;
-// anything else (multiple cards, or one card with quantity > 1) becomes a card_id-less
-// "lot" whose members live in tcgplayer_listing_cards instead. cost_basis is deliberately
-// left null here too — the dashboard only computes it live when the listing is marked sold,
-// so it stays accurate as of the actual sale date rather than order-capture time.
+// creates an 'active' placeholder listing for the order, with no financials populated yet.
+// Chris finalizes each one (marks it sold, with the real sold_price/fee/cost_basis/net_profit
+// and the quantity_owned decrement) through the existing chat-based flow once he's actually
+// packed and shipped it — this tool only books the placeholder, on his explicit instruction,
+// even though every order it processes represents an already-committed TCGplayer sale.
 async function createListingForOrder({ order, items }) {
   const linkable = items.filter((i) => i.card_id);
   if (linkable.length === 0) return null;
@@ -136,6 +185,15 @@ async function createListingForOrder({ order, items }) {
   const totalQty = linkable.reduce((sum, i) => sum + i.quantity, 0);
   const uniqueCardIds = [...new Set(linkable.map((i) => i.card_id))];
   const isSingleCard = uniqueCardIds.length === 1 && totalQty === 1;
+
+  const referenceDate = order.ordered_at ?? new Date().toISOString();
+  const duplicateListingId = await findPossibleDuplicateListing(uniqueCardIds, referenceDate);
+  if (duplicateListingId) {
+    return {
+      skipped: true,
+      reason: `An existing tcgplayer_listings row (id ${duplicateListingId}) already covers one of this order's cards within 3 days of ${referenceDate} — likely the same sale already recorded manually. No listing created; check listing ${duplicateListingId} against order ${order.order_number} and add one by hand if it's genuinely a separate sale.`,
+    };
+  }
 
   const { data: cardDetails, error: cardDetailsError } = await supabase
     .from('cards')
@@ -151,14 +209,17 @@ async function createListingForOrder({ order, items }) {
       } — ${condition}`
     : `Sorcery TCG Lot — ${totalQty} Cards`;
 
+  const listedPrice = order.order_total ?? 0;
+  // Cheap orders ship first-class stamp rate; $20+ bumps to padded-envelope/priority.
+  const shipping = listedPrice < 20 ? 0.82 : 5.5;
+
   const { data: newListing, error: listingError } = await supabase
     .from('tcgplayer_listings')
     .insert({
       card_id: isSingleCard ? uniqueCardIds[0] : null,
       title,
-      listed_price: order.order_total ?? 0,
-      // Cheap orders ship first-class stamp rate; $20+ bumps to padded-envelope/priority.
-      shipping_cost: (order.order_total ?? 0) < 20 ? 0.82 : 5.5,
+      listed_price: listedPrice,
+      shipping_cost: shipping,
       condition,
       quantity: 1,
       notes: `Auto-created from TCGplayer order ${order.order_number}`,
@@ -183,6 +244,7 @@ async function createListingForOrder({ order, items }) {
   if (listingCardsError) throw new Error(listingCardsError.message);
 
   // Mirrors CreateModal's quantity_listed bump, keeping "what's reserved for sale" accurate.
+  // quantity_owned is untouched until Chris marks the listing sold through the existing flow.
   for (const i of linkable) {
     const { data: cardRow, error: cardRowError } = await supabase
       .from('cards')
