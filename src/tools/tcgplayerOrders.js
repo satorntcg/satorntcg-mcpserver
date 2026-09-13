@@ -41,7 +41,7 @@ export const getTcgplayerOrdersTool = {
 export const createTcgplayerOrderTool = {
   name: 'create_tcgplayer_order',
   description:
-    'Create a TCGplayer order and its line items, matching each line item to a card by exact name (foil printings are matched literally, e.g. "Sinterfee (Foil)" — do not strip "(Foil)" from card_name_raw). Also creates a matching "active" listing in tcgplayer_listings (same shape the dashboard\'s manual "create listing" flow produces: quantity_listed bumped, no sold_price/fee/cost_basis/net_profit/quantity_owned changes yet) — even though the order email means TCGplayer already has a committed buyer, these are booked as placeholders on file and finalized later through the existing chat-based "mark sold" flow once the packing slip is printed and the order actually ships. Safe to re-run: if order_number already exists, the call is a no-op — no items or listing are (re-)created. Also guards against duplicating a sale recorded another way: if any of this order\'s cards already has a tcgplayer_listings row (manual or order-derived) within 3 days of the order date, listing creation is skipped (the order/items are still recorded) and the response says which existing listing to check — if it\'s genuinely a separate sale, add the listing by hand.',
+    'Create a TCGplayer order and its line items, matching each line item to a card by exact name (foil printings are matched literally, e.g. "Sinterfee (Foil)" — do not strip "(Foil)" from card_name_raw). Also creates a matching "active" listing in tcgplayer_listings (same shape the dashboard\'s manual "create listing" flow produces: quantity_listed bumped, no sold_price/fee/cost_basis/net_profit/quantity_owned changes yet) — even though the order email means TCGplayer already has a committed buyer, these are booked as placeholders on file and finalized later through the existing chat-based "mark sold" flow once the packing slip is printed and the order actually ships. Safe to re-run: if order_number already exists, the call is a no-op — no items or listing are (re-)created. Also guards against duplicating a sale that was already recorded manually: if any of this order\'s cards has a *manually*-created tcgplayer_listings row (not one this tool made) within 3 days of the order date, listing creation is skipped (the order/items are still recorded) and the response says which existing listing to check. Two auto-created listings for the same card from different orders are never treated as duplicates — each has its own order_number, so they\'re genuinely separate sales.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -125,13 +125,20 @@ export const createTcgplayerOrderTool = {
 
 // Guards against recreating a sale that's already recorded: a card sold via the dashboard's
 // manual flow and the same card's order email arriving through this tool both represent the
-// same real-world sale, and nothing else ties them together. If any existing tcgplayer_listings
-// row (manual or order-derived, active or sold) touches one of this order's cards within a few
-// days of the order date, we treat it as the same sale rather than risk a duplicate — this is
-// exactly the pattern that produced ~100 duplicate listings when historical orders were
-// backfilled against already-recorded manual sales. Erring toward skipping (and leaving the
-// order recorded but listing-less for manual review) is the safe direction: a missed auto-listing
-// costs a manual click, a duplicate silently inflates revenue/profit/COGS.
+// same real-world sale, and nothing else ties them together. If a *manually*-created listing
+// (notes IS NULL — i.e. not this tool's own output) touches one of this order's cards within a
+// few days of the order date, we treat it as the same sale rather than risk a duplicate — this
+// is exactly the pattern that produced ~100 duplicate listings when historical orders were
+// backfilled against already-recorded manual sales.
+//
+// Deliberately excludes other auto-created listings (notes starting with "Auto-created from
+// TCGplayer order ..."): each of those already came from its own distinct order_number, which
+// tcgplayer_orders' unique constraint guarantees can't be reprocessed, so two auto-created
+// listings for the same card are two genuinely separate real sales (a popular card selling
+// twice in a few days), not a duplicate. Matching on those too was an over-broad first cut that
+// skipped a legitimate order (F0DFDDC3-36E444-16D80) because a *different* order had sold the
+// same card ~29 hours earlier — narrowing to manual-only listings fixes that false positive
+// without reopening the original manual/auto collision this guard exists for.
 const DUPLICATE_WINDOW_MS = 1000 * 60 * 60 * 24 * 3;
 
 async function findPossibleDuplicateListing(cardIds, referenceDate) {
@@ -139,7 +146,7 @@ async function findPossibleDuplicateListing(cardIds, referenceDate) {
 
   const { data: direct, error: directError } = await supabase
     .from('tcgplayer_listings')
-    .select('id, listed_at, sold_at')
+    .select('id, listed_at, sold_at, notes')
     .in('card_id', cardIds);
   if (directError) throw new Error(directError.message);
 
@@ -154,7 +161,7 @@ async function findPossibleDuplicateListing(cardIds, referenceDate) {
   if (junctionListingIds.length > 0) {
     const { data, error } = await supabase
       .from('tcgplayer_listings')
-      .select('id, listed_at, sold_at')
+      .select('id, listed_at, sold_at, notes')
       .in('id', junctionListingIds);
     if (error) throw new Error(error.message);
     viaJunction = data ?? [];
@@ -164,6 +171,7 @@ async function findPossibleDuplicateListing(cardIds, referenceDate) {
   for (const row of [...(direct ?? []), ...viaJunction]) candidates.set(row.id, row);
 
   for (const row of candidates.values()) {
+    if (row.notes != null) continue; // only manual listings count as a possible duplicate
     const dates = [row.sold_at, row.listed_at].filter(Boolean);
     if (dates.some((d) => Math.abs(new Date(d).getTime() - refTime) <= DUPLICATE_WINDOW_MS)) {
       return row.id;
