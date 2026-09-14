@@ -41,7 +41,7 @@ export const getTcgplayerOrdersTool = {
 export const createTcgplayerOrderTool = {
   name: 'create_tcgplayer_order',
   description:
-    'Create a TCGplayer order and its line items, matching each line item to a card by exact name (foil printings are matched literally, e.g. "Sinterfee (Foil)" — do not strip "(Foil)" from card_name_raw). Also creates a matching "active" listing in tcgplayer_listings (same shape the dashboard\'s manual "create listing" flow produces: quantity_listed bumped, no sold_price/fee/cost_basis/net_profit/quantity_owned changes yet) — even though the order email means TCGplayer already has a committed buyer, these are booked as placeholders on file and finalized later through the existing chat-based "mark sold" flow once the packing slip is printed and the order actually ships. Safe to re-run: if order_number already exists, the call is a no-op — no items or listing are (re-)created. Also guards against duplicating a sale that was already recorded manually: if any of this order\'s cards has a *manually*-created tcgplayer_listings row (not one this tool made) within 3 days of the order date, listing creation is skipped (the order/items are still recorded) and the response says which existing listing to check. Two auto-created listings for the same card from different orders are never treated as duplicates — each has its own order_number, so they\'re genuinely separate sales.',
+    'Create a TCGplayer order and its line items, matching each line item to a card by exact name (foil printings are matched literally, e.g. "Sinterfee (Foil)" — do not strip "(Foil)" from card_name_raw). Also creates a matching "active" listing in tcgplayer_listings (same shape the dashboard\'s manual "create listing" flow produces: quantity_listed bumped, no sold_price/fee/cost_basis/net_profit/quantity_owned changes yet) — even though the order email means TCGplayer already has a committed buyer, these are booked as placeholders on file and finalized later through the existing chat-based "mark sold" flow once the packing slip is printed and the order actually ships. Safe to re-run: if order_number already exists, its line items are never (re-)created, and its listing/inventory sync is only (re-)attempted if it never completed the first time (e.g. a prior call errored or timed out after the order was recorded but before the listing was synced) — so a retry after a failed call finishes the sync instead of silently no-oping. Also guards against duplicating a sale that was already recorded manually: if any of this order\'s cards has a *manually*-created tcgplayer_listings row (not one this tool made) within 3 days of the order date, listing creation is skipped (the order/items are still recorded) and the response says which existing listing to check. Two auto-created listings for the same card from different orders are never treated as duplicates — each has its own order_number, so they\'re genuinely separate sales.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -85,11 +85,41 @@ export const createTcgplayerOrderTool = {
     if (!inserted) {
       const { data: existing, error: fetchError } = await supabase
         .from('tcgplayer_orders')
-        .select()
+        .select('*, tcgplayer_order_items(*)')
         .eq('order_number', order_number)
         .single();
       if (fetchError) throw new Error(fetchError.message);
-      return { order: existing, items: [], skipped: true, reason: 'order_number already exists — no items inserted' };
+
+      const existingItems = existing.tcgplayer_order_items ?? [];
+
+      // The order row can exist without its listing/inventory sync ever having run
+      // (e.g. a prior call timed out after inserting the order but before syncing) —
+      // in that case a bare no-op here would leave it permanently unsynced. Finish
+      // the sync now instead of only checking that the order row exists.
+      const { data: existingListing, error: listingCheckError } = await supabase
+        .from('tcgplayer_listings')
+        .select('id')
+        .eq('notes', `Auto-created from TCGplayer order ${order_number}`)
+        .maybeSingle();
+      if (listingCheckError) throw new Error(listingCheckError.message);
+
+      if (existingListing) {
+        return {
+          order: existing,
+          items: existingItems,
+          skipped: true,
+          reason: 'order_number already exists and its listing/inventory sync already completed — no-op',
+        };
+      }
+
+      const listing = await createListingForOrder({ order: existing, items: existingItems });
+      return {
+        order: existing,
+        items: existingItems,
+        skipped: true,
+        reason: 'order_number already existed but its listing/inventory sync had not completed — completed it now',
+        listing,
+      };
     }
 
     const matchedItems = [];
@@ -120,6 +150,76 @@ export const createTcgplayerOrderTool = {
     const listing = await createListingForOrder({ order: inserted, items: insertedItems });
 
     return { order: inserted, items: insertedItems, unmatched, listing };
+  },
+};
+
+export const getOrdersMissingListingsTool = {
+  name: 'get_orders_missing_listings',
+  description:
+    'Find TCGplayer orders whose listing/inventory sync never completed — a direct comparison of tcgplayer_orders/tcgplayer_order_items against tcgplayer_listings, not an inference from quantity_listed or updated_at (those can shift for unrelated reasons, e.g. a price refresh, and give a false read). An order counts as synced if it has its own auto-created listing (tcgplayer_listings.notes = "Auto-created from TCGplayer order <order_number>"), or if listing creation was correctly skipped because a *manual* listing already covered one of its cards within 3 days of the order date — the same duplicate-sale guard create_tcgplayer_order itself uses. An auto-created listing belonging to a *different* order never counts as coverage, since that guard only ever fires against manual listings. Anything else is flagged as missing, listing every line item on the order since a failed sync never lists any of them. Run with `since` set to the start of an order-capture run to catch a bad sync within the hour; run with no `since` for a full backlog sweep.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      since: {
+        type: 'string',
+        description: 'Optional ISO date/datetime — only check orders with created_at >= this. Omit to check every order on file.',
+      },
+      limit: {
+        type: 'number',
+        default: 50,
+        description: 'Max number of missing orders to return. checked_count/missing_count still reflect the full since-filtered set.',
+      },
+    },
+  },
+  handler: async ({ since, limit = 50 }) => {
+    let orderQuery = supabase
+      .from('tcgplayer_orders')
+      .select('order_number, order_total, created_at, ordered_at, tcgplayer_order_items(card_id, card_name_raw, quantity)')
+      .order('created_at', { ascending: true });
+    if (since) orderQuery = orderQuery.gte('created_at', since);
+    const { data: orders, error: ordersError } = await orderQuery;
+    if (ordersError) throw new Error(ordersError.message);
+
+    const { data: autoListings, error: autoError } = await supabase
+      .from('tcgplayer_listings')
+      .select('notes')
+      .like('notes', 'Auto-created from TCGplayer order %');
+    if (autoError) throw new Error(autoError.message);
+    const syncedOrderNumbers = new Set(
+      autoListings.map((l) => l.notes.replace('Auto-created from TCGplayer order ', '').trim())
+    );
+
+    const candidates = orders.filter((o) => !syncedOrderNumbers.has(o.order_number));
+
+    const missing = [];
+    for (const o of candidates) {
+      const items = o.tcgplayer_order_items ?? [];
+      const cardIds = [...new Set(items.map((i) => i.card_id).filter(Boolean))];
+
+      // Mirrors createListingForOrder: no matched cards means no listing could ever
+      // have been created, so there's nothing to check a duplicate guard against.
+      const duplicateListingId =
+        cardIds.length > 0 ? await findPossibleDuplicateListing(cardIds, o.ordered_at ?? o.created_at) : null;
+      if (duplicateListingId) continue;
+
+      missing.push({
+        order_number: o.order_number,
+        order_total: o.order_total,
+        created_at: o.created_at,
+        ordered_at: o.ordered_at,
+        missing_items: items.map((i) => ({
+          card_name_raw: i.card_name_raw,
+          quantity: i.quantity,
+          unmatched_card: i.card_id == null,
+        })),
+      });
+    }
+
+    return {
+      orders_missing_listings: missing.slice(0, limit),
+      checked_count: orders.length,
+      missing_count: missing.length,
+    };
   },
 };
 
