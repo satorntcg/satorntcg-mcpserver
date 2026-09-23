@@ -1,4 +1,5 @@
 import { supabase } from '../supabaseClient.js';
+import { withDbSpan } from '../dbSpan.js';
 
 export const getInventorySummaryTool = {
   name: 'get_inventory_summary',
@@ -23,7 +24,7 @@ export const getInventorySummaryTool = {
     if (name_contains) {
       query = query.ilike('name', `%${name_contains}%`);
     }
-    const { data, error } = await query;
+    const { data, error } = await withDbSpan('v_inventory_dashboard', () => query);
     if (error) throw new Error(error.message);
     return { inventory: data ?? [] };
   },
@@ -55,7 +56,7 @@ export const getLatestPricesTool = {
     if (name_contains) {
       query = query.ilike('name', `%${name_contains}%`);
     }
-    const { data, error } = await query;
+    const { data, error } = await withDbSpan('v_latest_prices', () => query);
     if (error) throw new Error(error.message);
     return { prices: data ?? [] };
   },

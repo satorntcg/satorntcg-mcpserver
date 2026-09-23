@@ -1,4 +1,5 @@
 import { supabase } from '../supabaseClient.js';
+import { withDbSpan } from '../dbSpan.js';
 
 export const getBoxPnlTool = {
   name: 'get_box_pnl',
@@ -20,7 +21,7 @@ export const getBoxPnlTool = {
   handler: async ({ box_id, limit = 50 }) => {
     let query = supabase.from('v_box_pnl').select('*').limit(limit);
     if (box_id) query = query.eq('id', box_id);
-    const { data, error } = await query;
+    const { data, error } = await withDbSpan('v_box_pnl', () => query);
     if (error) throw new Error(error.message);
     return { boxes: data ?? [] };
   },
@@ -32,7 +33,7 @@ export const getGlobalPnlTool = {
     'Get overall business P&L across all boxes/listings (total spend vs. total realized + unrealized value). Use for "how is the business doing overall" questions.',
   inputSchema: { type: 'object', properties: {} },
   handler: async () => {
-    const { data, error } = await supabase.from('v_global_pnl').select('*').single();
+    const { data, error } = await withDbSpan('v_global_pnl', () => supabase.from('v_global_pnl').select('*').single());
     if (error) throw new Error(error.message);
     return { global_pnl: data };
   },

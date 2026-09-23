@@ -1,4 +1,5 @@
 import { supabase } from '../supabaseClient.js';
+import { withDbSpan } from '../dbSpan.js';
 
 export const getPriceAlertsTool = {
   name: 'get_price_alerts',
@@ -26,8 +27,8 @@ export const getPriceAlertsTool = {
   },
   handler: async ({ include_stale_listings = true, include_listing_alerts = true, limit = 25 }) => {
     const [activeAlerts, gainersLosers] = await Promise.all([
-      supabase.from('v_active_alerts').select('*').eq('dismissed', false).limit(limit),
-      supabase.from('v_price_gainers_losers').select('*').limit(limit),
+      withDbSpan('v_active_alerts', () => supabase.from('v_active_alerts').select('*').eq('dismissed', false).limit(limit)),
+      withDbSpan('v_price_gainers_losers', () => supabase.from('v_price_gainers_losers').select('*').limit(limit)),
     ]);
 
     const result = {
@@ -36,12 +37,16 @@ export const getPriceAlertsTool = {
     };
 
     if (include_listing_alerts) {
-      const { data } = await supabase.from('v_listing_price_alerts').select('*').limit(limit);
+      const { data } = await withDbSpan('v_listing_price_alerts', () =>
+        supabase.from('v_listing_price_alerts').select('*').limit(limit)
+      );
       result.listing_price_alerts = data ?? [];
     }
 
     if (include_stale_listings) {
-      const { data } = await supabase.from('v_stale_listings').select('*').limit(limit);
+      const { data } = await withDbSpan('v_stale_listings', () =>
+        supabase.from('v_stale_listings').select('*').limit(limit)
+      );
       result.stale_listings = data ?? [];
     }
 

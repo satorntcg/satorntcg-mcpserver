@@ -42,7 +42,7 @@ Claude Desktop / Claude Code (MCP client)
                           v_price_gainers_losers, v_listing_price_alerts
 ```
 
-Observability via OpenTelemetry (tracing tool calls end-to-end, exported to Jaeger) is planned — see `src/tracing.js` for the stub and activation notes.
+Every tool call is traced with OpenTelemetry, exported to Jaeger — see [Observability](#observability) below.
 
 ## Schema this expects
 
@@ -74,15 +74,46 @@ The server speaks MCP over stdio, so it's meant to be launched by an MCP client,
 
 Restart Claude Desktop, and the tools above become available in conversation.
 
+## Observability
+
+Every tool call is wrapped in an OpenTelemetry span (`tool.<name>`), with each Supabase query the tool makes nested underneath it as its own `db.query` child span. That split is the point: a slow tool call in Jaeger tells you at a glance whether the time went into the DB round-trip or into everything else the handler did (matching, mapping, duplicate-guard checks, etc.), instead of being one opaque block of latency.
+
+Each `tool.*` span carries:
+
+- `mcp.tool.name`, `mcp.tool.args` — which tool, called with what
+- `mcp.tool.row_count` — best-effort row count from the result, when there's an obvious array to count
+- `mcp.tool.duration_ms` — total handler wall time
+- `mcp.tool.slow` — `true` once `mcp.tool.duration_ms` exceeds `SLOW_TOOL_THRESHOLD_MS` (1000ms, in `src/index.js`) — lets you filter straight to the calls worth looking at without eyeballing durations
+- span status `OK`/`ERROR`, with the exception recorded on error
+
+Each `db.query` child span carries `db.table` and, on success, `db.row_count`.
+
+Traces export over OTLP/HTTP to `OTEL_EXPORTER_OTLP_ENDPOINT` (defaults to `http://localhost:4318/v1/traces`, i.e. a local collector/Jaeger — see `.env.example`). Spans are flushed on shutdown (`SIGTERM`/`SIGINT`), so a normal Claude Desktop restart doesn't lose the last few tool calls; see `src/tracing.js` for the shutdown handling and the reasoning behind its timeout.
+
+### Running Jaeger locally
+
+Jaeger's all-in-one image accepts OTLP/HTTP on the default port this server already exports to, so no extra config is needed:
+
+```bash
+docker run -d --name jaeger \
+  -p 16686:16686 \
+  -p 4318:4318 \
+  jaegertracing/all-in-one:latest
+```
+
+Then start the server as usual (`npm start`, launched by Claude Desktop or run directly) and make a few tool calls. Open the Jaeger UI at [http://localhost:16686](http://localhost:16686), pick **satorntcg-mcp-server** from the Service dropdown, and click Find Traces.
+
+![Jaeger trace view of a satorntcg-mcp-server tool call, showing the tool.* span and its nested db.query child spans](docs/jaeger-trace.png)
+
 ## Security note
 
 `SUPABASE_SERVICE_KEY` is the elevated service-role key, not the public anon key. This is safe here because the server only ever runs as a local process launched by a trusted MCP client (never in a browser bundle) — the same reasoning as using a service role key inside a Supabase Edge Function. Never commit `.env`; only `.env.example` (placeholder values) is tracked.
 
 ## Roadmap
 
-- [ ] OpenTelemetry tracing per tool call (latency, row counts, error rate) → Jaeger locally, Honeycomb/Grafana for a hosted demo
 - [ ] `suggest_listing` tool — draft an eBay listing from inventory + pricing data
 - [ ] HTTP/SSE transport for remote access, alongside the local stdio transport
+- [ ] Export OTel traces to a hosted backend (Honeycomb/Grafana) for a demo, in addition to local Jaeger
 
 ## License
 

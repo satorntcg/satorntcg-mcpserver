@@ -1,4 +1,5 @@
 import { supabase } from '../supabaseClient.js';
+import { withDbSpan } from '../dbSpan.js';
 
 export const getEbayListingsTool = {
   name: 'get_ebay_listings',
@@ -22,7 +23,7 @@ export const getEbayListingsTool = {
   },
   handler: async ({ status = 'active', limit = 50 }) => {
     const view = status === 'sold' ? 'v_ebay_sold' : 'v_ebay_active';
-    const { data, error } = await supabase.from(view).select('*').limit(limit);
+    const { data, error } = await withDbSpan(view, () => supabase.from(view).select('*').limit(limit));
     if (error) throw new Error(error.message);
     return { status, listings: data ?? [] };
   },

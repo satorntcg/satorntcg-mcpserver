@@ -1,4 +1,5 @@
 import { supabase } from '../supabaseClient.js';
+import { withDbSpan } from '../dbSpan.js';
 
 export const getTcgplayerOrdersTool = {
   name: 'get_tcgplayer_orders',
@@ -32,7 +33,7 @@ export const getTcgplayerOrdersTool = {
     if (status) query = query.eq('status', status);
     if (order_number) query = query.eq('order_number', order_number);
 
-    const { data, error } = await query;
+    const { data, error } = await withDbSpan('tcgplayer_orders', () => query);
     if (error) throw new Error(error.message);
     return { orders: data ?? [] };
   },
@@ -72,22 +73,22 @@ export const createTcgplayerOrderTool = {
     required: ['order_number', 'items'],
   },
   handler: async ({ order_number, order_total, ship_by, gmail_message_id, manage_order_url, ordered_at, items }) => {
-    const { data: inserted, error: orderError } = await supabase
-      .from('tcgplayer_orders')
-      .upsert(
-        { order_number, order_total, ship_by, gmail_message_id, manage_order_url, ordered_at },
-        { onConflict: 'order_number', ignoreDuplicates: true }
-      )
-      .select()
-      .maybeSingle();
+    const { data: inserted, error: orderError } = await withDbSpan('tcgplayer_orders', () =>
+      supabase
+        .from('tcgplayer_orders')
+        .upsert(
+          { order_number, order_total, ship_by, gmail_message_id, manage_order_url, ordered_at },
+          { onConflict: 'order_number', ignoreDuplicates: true }
+        )
+        .select()
+        .maybeSingle()
+    );
     if (orderError) throw new Error(orderError.message);
 
     if (!inserted) {
-      const { data: existing, error: fetchError } = await supabase
-        .from('tcgplayer_orders')
-        .select('*, tcgplayer_order_items(*)')
-        .eq('order_number', order_number)
-        .single();
+      const { data: existing, error: fetchError } = await withDbSpan('tcgplayer_orders', () =>
+        supabase.from('tcgplayer_orders').select('*, tcgplayer_order_items(*)').eq('order_number', order_number).single()
+      );
       if (fetchError) throw new Error(fetchError.message);
 
       const existingItems = existing.tcgplayer_order_items ?? [];
@@ -96,11 +97,13 @@ export const createTcgplayerOrderTool = {
       // (e.g. a prior call timed out after inserting the order but before syncing) —
       // in that case a bare no-op here would leave it permanently unsynced. Finish
       // the sync now instead of only checking that the order row exists.
-      const { data: existingListing, error: listingCheckError } = await supabase
-        .from('tcgplayer_listings')
-        .select('id')
-        .eq('notes', `Auto-created from TCGplayer order ${order_number}`)
-        .maybeSingle();
+      const { data: existingListing, error: listingCheckError } = await withDbSpan('tcgplayer_listings', () =>
+        supabase
+          .from('tcgplayer_listings')
+          .select('id')
+          .eq('notes', `Auto-created from TCGplayer order ${order_number}`)
+          .maybeSingle()
+      );
       if (listingCheckError) throw new Error(listingCheckError.message);
 
       if (existingListing) {
@@ -124,11 +127,9 @@ export const createTcgplayerOrderTool = {
 
     const matchedItems = [];
     for (const item of items) {
-      const { data: cardMatches, error: cardError } = await supabase
-        .from('cards')
-        .select('id')
-        .eq('name', item.card_name_raw)
-        .limit(1);
+      const { data: cardMatches, error: cardError } = await withDbSpan('cards', () =>
+        supabase.from('cards').select('id').eq('name', item.card_name_raw).limit(1)
+      );
       if (cardError) throw new Error(cardError.message);
       matchedItems.push({
         order_id: inserted.id,
@@ -140,10 +141,9 @@ export const createTcgplayerOrderTool = {
       });
     }
 
-    const { data: insertedItems, error: itemsError } = await supabase
-      .from('tcgplayer_order_items')
-      .insert(matchedItems)
-      .select();
+    const { data: insertedItems, error: itemsError } = await withDbSpan('tcgplayer_order_items', () =>
+      supabase.from('tcgplayer_order_items').insert(matchedItems).select()
+    );
     if (itemsError) throw new Error(itemsError.message);
 
     const unmatched = insertedItems.filter((i) => !i.card_id).map((i) => i.card_name_raw);
@@ -177,13 +177,12 @@ export const getOrdersMissingListingsTool = {
       .select('order_number, order_total, created_at, ordered_at, tcgplayer_order_items(card_id, card_name_raw, quantity)')
       .order('created_at', { ascending: true });
     if (since) orderQuery = orderQuery.gte('created_at', since);
-    const { data: orders, error: ordersError } = await orderQuery;
+    const { data: orders, error: ordersError } = await withDbSpan('tcgplayer_orders', () => orderQuery);
     if (ordersError) throw new Error(ordersError.message);
 
-    const { data: autoListings, error: autoError } = await supabase
-      .from('tcgplayer_listings')
-      .select('notes')
-      .like('notes', 'Auto-created from TCGplayer order %');
+    const { data: autoListings, error: autoError } = await withDbSpan('tcgplayer_listings', () =>
+      supabase.from('tcgplayer_listings').select('notes').like('notes', 'Auto-created from TCGplayer order %')
+    );
     if (autoError) throw new Error(autoError.message);
     const syncedOrderNumbers = new Set(
       autoListings.map((l) => l.notes.replace('Auto-created from TCGplayer order ', '').trim())
@@ -244,25 +243,22 @@ const DUPLICATE_WINDOW_MS = 1000 * 60 * 60 * 24 * 3;
 async function findPossibleDuplicateListing(cardIds, referenceDate) {
   const refTime = new Date(referenceDate).getTime();
 
-  const { data: direct, error: directError } = await supabase
-    .from('tcgplayer_listings')
-    .select('id, listed_at, sold_at, notes')
-    .in('card_id', cardIds);
+  const { data: direct, error: directError } = await withDbSpan('tcgplayer_listings', () =>
+    supabase.from('tcgplayer_listings').select('id, listed_at, sold_at, notes').in('card_id', cardIds)
+  );
   if (directError) throw new Error(directError.message);
 
-  const { data: junctionRows, error: junctionError } = await supabase
-    .from('tcgplayer_listing_cards')
-    .select('listing_id')
-    .in('card_id', cardIds);
+  const { data: junctionRows, error: junctionError } = await withDbSpan('tcgplayer_listing_cards', () =>
+    supabase.from('tcgplayer_listing_cards').select('listing_id').in('card_id', cardIds)
+  );
   if (junctionError) throw new Error(junctionError.message);
 
   const junctionListingIds = [...new Set((junctionRows ?? []).map((j) => j.listing_id))];
   let viaJunction = [];
   if (junctionListingIds.length > 0) {
-    const { data, error } = await supabase
-      .from('tcgplayer_listings')
-      .select('id, listed_at, sold_at, notes')
-      .in('id', junctionListingIds);
+    const { data, error } = await withDbSpan('tcgplayer_listings', () =>
+      supabase.from('tcgplayer_listings').select('id, listed_at, sold_at, notes').in('id', junctionListingIds)
+    );
     if (error) throw new Error(error.message);
     viaJunction = data ?? [];
   }
@@ -303,10 +299,9 @@ async function createListingForOrder({ order, items }) {
     };
   }
 
-  const { data: cardDetails, error: cardDetailsError } = await supabase
-    .from('cards')
-    .select('id, name, set_name')
-    .in('id', uniqueCardIds);
+  const { data: cardDetails, error: cardDetailsError } = await withDbSpan('cards', () =>
+    supabase.from('cards').select('id, name, set_name').in('id', uniqueCardIds)
+  );
   if (cardDetailsError) throw new Error(cardDetailsError.message);
   const cardById = Object.fromEntries((cardDetails ?? []).map((c) => [c.id, c]));
 
@@ -321,49 +316,50 @@ async function createListingForOrder({ order, items }) {
   // Cheap orders ship first-class stamp rate; $20+ bumps to padded-envelope/priority.
   const shipping = listedPrice < 20 ? 0.82 : 5.5;
 
-  const { data: newListing, error: listingError } = await supabase
-    .from('tcgplayer_listings')
-    .insert({
-      card_id: isSingleCard ? uniqueCardIds[0] : null,
-      title,
-      listed_price: listedPrice,
-      shipping_cost: shipping,
-      condition,
-      quantity: 1,
-      notes: `Auto-created from TCGplayer order ${order.order_number}`,
-      tcgplayer_url: order.manage_order_url ?? null,
-      status: 'active',
-      ...(order.ordered_at ? { listed_at: order.ordered_at } : {}),
-    })
-    .select()
-    .single();
+  const { data: newListing, error: listingError } = await withDbSpan('tcgplayer_listings', () =>
+    supabase
+      .from('tcgplayer_listings')
+      .insert({
+        card_id: isSingleCard ? uniqueCardIds[0] : null,
+        title,
+        listed_price: listedPrice,
+        shipping_cost: shipping,
+        condition,
+        quantity: 1,
+        notes: `Auto-created from TCGplayer order ${order.order_number}`,
+        tcgplayer_url: order.manage_order_url ?? null,
+        status: 'active',
+        ...(order.ordered_at ? { listed_at: order.ordered_at } : {}),
+      })
+      .select()
+      .single()
+  );
   if (listingError) throw new Error(listingError.message);
 
   const perCardPrice =
     order.order_total != null && totalQty > 0 ? parseFloat((order.order_total / totalQty).toFixed(2)) : 0;
-  const { error: listingCardsError } = await supabase.from('tcgplayer_listing_cards').insert(
-    linkable.map((i) => ({
-      listing_id: newListing.id,
-      card_id: i.card_id,
-      price: perCardPrice,
-      quantity: i.quantity,
-    }))
+  const { error: listingCardsError } = await withDbSpan('tcgplayer_listing_cards', () =>
+    supabase.from('tcgplayer_listing_cards').insert(
+      linkable.map((i) => ({
+        listing_id: newListing.id,
+        card_id: i.card_id,
+        price: perCardPrice,
+        quantity: i.quantity,
+      }))
+    )
   );
   if (listingCardsError) throw new Error(listingCardsError.message);
 
   // Mirrors CreateModal's quantity_listed bump, keeping "what's reserved for sale" accurate.
   // quantity_owned is untouched until Chris marks the listing sold through the existing flow.
   for (const i of linkable) {
-    const { data: cardRow, error: cardRowError } = await supabase
-      .from('cards')
-      .select('quantity_listed')
-      .eq('id', i.card_id)
-      .single();
+    const { data: cardRow, error: cardRowError } = await withDbSpan('cards', () =>
+      supabase.from('cards').select('quantity_listed').eq('id', i.card_id).single()
+    );
     if (cardRowError) throw new Error(cardRowError.message);
-    const { error: updateError } = await supabase
-      .from('cards')
-      .update({ quantity_listed: (cardRow.quantity_listed ?? 0) + i.quantity })
-      .eq('id', i.card_id);
+    const { error: updateError } = await withDbSpan('cards', () =>
+      supabase.from('cards').update({ quantity_listed: (cardRow.quantity_listed ?? 0) + i.quantity }).eq('id', i.card_id)
+    );
     if (updateError) throw new Error(updateError.message);
   }
 
