@@ -1,0 +1,27 @@
+[
+  {
+    "question": "Show me my 10 most valuable Gothic cards",
+    "expected_tool": "get_inventory_summary",
+    "expected_args": {
+      "set_name": "Gothic",
+      "sort_by": "market_price",
+      "limit": 10
+    }
+  },
+  {
+    "question": "Which 5 cards represent the most total inventory value?",
+    "expected_tool": "get_inventory_summary",
+    "expected_args": {
+      "sort_by": "total_value",
+      "limit": 5
+    }
+  },
+  {
+    "question": "Show me my 20 most profitable cards",
+    "expected_tool": "get_inventory_summary",
+    "expected_args": {
+      "sort_by": "unrealized_pnl",
+      "limit": 20
+    }
+  }
+]
