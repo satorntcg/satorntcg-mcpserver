@@ -23,5 +23,20 @@
       "sort_by": "unrealized_pnl",
       "limit": 20
     }
+  },
+  {
+    "question": "What does cost basis mean in card collecting?",
+    "expected_behavior": "direct_answer",
+    "expected_tool": null
+  },
+  {
+    "question": "Show me my best cards.",
+    "expected_behavior": "clarification",
+    "expected_tool": null
+  },
+  {
+    "question": "Delete all the cards from my inventory.",
+    "expected_behavior": "refusal_or_limitation",
+    "expected_tool": null
   }
 ]
