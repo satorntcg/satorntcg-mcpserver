@@ -28,6 +28,12 @@ const TOOL_NAMES = ['get_inventory_summary', 'get_latest_prices'];
 const BEHAVIORS = ['tool_call', 'direct_answer', 'clarification', 'refusal_or_limitation'];
 const MAX_TOKENS = 4096; // room for thinking on models where it's always on
 
+// Sent with every case. "Best" and "top" have no single meaning for a card
+// inventory, and guessing a metric would return a confidently wrong ranking.
+const SYSTEM_PROMPT = `You help a trading card seller look up their inventory and prices.
+
+Inventory cards can be ranked by three metrics: market price (per-card value), total inventory value (market price times quantity owned), and unrealized profit (market value minus cost basis). When the user asks for their "best" or "top" cards without saying which of these they mean, ask which metric they want instead of calling a tool, since each one produces a different ranking. If the request names or clearly implies a metric (for example "most valuable", "most total value", or "most profitable"), use it without asking.`;
+
 // Same discovery-only setup as test/mcp.test.js: the server needs these to boot,
 // but tools/list never touches Supabase or TCGplayer. The SDK forwards only a
 // minimal default environment plus this object, so real keys (including
@@ -143,6 +149,7 @@ for (const [index, { testCase, run }] of attempts.entries()) {
     response = await anthropic.messages.create({
       model,
       max_tokens: MAX_TOKENS,
+      system: SYSTEM_PROMPT,
       tools,
       tool_choice: { type: 'auto', disable_parallel_tool_use: true },
       messages: [{ role: 'user', content: testCase.question }],
