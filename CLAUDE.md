@@ -9,11 +9,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `npm test` — run every `test/**/*.test.js` with Node's built-in test runner (`node --test`)
 - `node --test test/<file>.test.js` — run one test file
 - `node evals/run-offline.js` — run the offline tool-selection eval (**run from the repo root**: it reads `evals/tool-selection.json` relative to the cwd)
+- `ANTHROPIC_MODEL=<id> node agent/run-agent.js "<question>"` — one-shot CLI agent over the read-only tools (**calls the real DB and Anthropic API**). Loop logic lives in `agent/agentCore.js` (no SDK/Supabase/tracing imports) so `test/agent.test.js` can drive it with fake clients. Tracing is added from outside by `agent/agentTracing.js`, which wraps the Anthropic and MCP clients passed to `runAgent()` (tested in `test/agentTracing.test.js` with an in-memory exporter). Keep tracing out of `agentCore.js`. Metrics (`agent/agentMetrics.js`, tested in `test/agentMetrics.test.js`) are off unless `OTEL_METRICS_EXPORTER=console`. Instruments must be created after `initTracing()`, because the metrics API has no proxy meter.
 - No lint, typecheck, or build step.
 
 Env vars (from `.env`, loaded by `src/env.js` via an absolute path — see `.env.example`):
 - `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` — required; `src/supabaseClient.js` **throws at import time** without them
 - `OTEL_EXPORTER_OTLP_ENDPOINT` — optional, defaults to `http://localhost:4318/v1/traces` (Jaeger)
+- `OTEL_METRICS_EXPORTER` — agent CLI only: `otlp` sends delta metrics to the Collector in `observability/` (`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, default `http://localhost:4319/v1/metrics`; port 4318 is Jaeger's); `console` prints them to stderr at exit; unset/`none` disables them. Metrics use their own MeterProvider with a `service.name`-only resource, so per-process attributes never become labels.
 - `TCGPLAYER_COOKIE` — only read when `print_packing_slip` runs
 
 ## Architecture

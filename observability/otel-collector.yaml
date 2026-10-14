@@ -1,0 +1,42 @@
+# OpenTelemetry Collector config: OTLP/HTTP metrics in, Prometheus scrape endpoint out.
+#
+# Why delta_to_cumulative: every agent run is a new, short-lived process. With
+# the SDK's default cumulative temporality each run would report "agent.requests
+# = 1" from its own zero, and the Prometheus exporter would just overwrite the
+# previous run's 1 with the next run's 1, so the counter never goes up. The agent
+# therefore exports DELTA temporality (agent/agentMetrics.js), and this
+# processor adds each run's deltas into one running cumulative series per label
+# set, which is what Prometheus counters and histograms expect.
+#
+# Those running totals live in the Collector's memory. Restarting the Collector
+# starts them again from 0, which Prometheus treats as a normal counter reset
+# (rate()/increase() handle it).
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  delta_to_cumulative:
+    # A series not updated for this long is dropped and restarts from 0 on its
+    # next run. The default (5m) is far shorter than the gap between CLI runs.
+    max_stale: 168h
+
+exporters:
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    # Same reasoning as max_stale: keep series on /metrics between sporadic runs.
+    metric_expiration: 168h
+    # Resource attributes stay on target_info instead of being copied onto every
+    # series as labels. The agent's metric resource is only service.name.
+    resource_to_telemetry_conversion:
+      enabled: false
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [delta_to_cumulative]
+      exporters: [prometheus]

@@ -1,0 +1,42 @@
+# Local metrics stack for agent/run-agent.js: OpenTelemetry Collector + Prometheus.
+#
+# Traces are NOT part of this. They keep going straight from the agent and the
+# MCP server to the standalone Jaeger container (`docker run ... jaeger`, see the
+# README), which already owns host ports 4317/4318/16686. The Collector's OTLP
+# HTTP receiver is therefore published on 4319 instead, and only has a metrics
+# pipeline.
+#
+# All ports bind to 127.0.0.1 so nothing is reachable from the network.
+#
+#   docker compose -f observability/docker-compose.yml up -d
+#   docker compose -f observability/docker-compose.yml down
+
+name: satorntcg-observability
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.161.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "127.0.0.1:4319:4318" # OTLP/HTTP in (agent -> Collector), metrics only
+      - "127.0.0.1:8889:8889" # Prometheus exposition of what the Collector holds
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      - otel-collector
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:

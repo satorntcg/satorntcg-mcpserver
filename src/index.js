@@ -3,7 +3,7 @@ import { initTracing } from './tracing.js';
 
 initTracing();
 
-import { trace, SpanStatusCode } from '@opentelemetry/api';
+import { context, propagation, trace, SpanStatusCode } from '@opentelemetry/api';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -30,7 +30,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     throw new Error(`Unknown tool: ${request.params.name}`);
   }
 
-  return tracer.startActiveSpan(`tool.${tool.name}`, async (span) => {
+  // agent/run-agent.js puts W3C `traceparent`/`tracestate` in the request's
+  // `_meta`, so this span joins the agent's trace. Clients that don't (Claude
+  // Desktop, Claude Code) send no such keys, and extract() then leaves the
+  // context unchanged, so the span starts a new trace as before.
+  const parentContext = propagation.extract(context.active(), request.params._meta ?? {});
+
+  return tracer.startActiveSpan(`tool.${tool.name}`, {}, parentContext, async (span) => {
     span.setAttribute('mcp.tool.name', tool.name);
     span.setAttribute('mcp.tool.args', JSON.stringify(request.params.arguments ?? {}));
 
