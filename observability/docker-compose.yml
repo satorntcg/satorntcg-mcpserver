@@ -1,4 +1,5 @@
-# Local metrics stack for agent/run-agent.js: OpenTelemetry Collector + Prometheus.
+# Local metrics stack for agent/run-agent.js: OpenTelemetry Collector + Prometheus
+# + Grafana (Prometheus is provisioned as Grafana's data source; no dashboards yet).
 #
 # Traces are NOT part of this. They keep going straight from the agent and the
 # MCP server to the standalone Jaeger container (`docker run ... jaeger`, see the
@@ -38,5 +39,26 @@ services:
       - otel-collector
     restart: unless-stopped
 
+  grafana:
+    image: grafana/grafana:12.2.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      # Only applied the first time grafana-data is initialised. Default admin/admin
+      # (Grafana asks for a new password on first login); override via env/.env.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      # Only the datasources subfolder, so the image's own (empty) dashboards/
+      # and alerting/ provisioning folders stay as they are.
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
 volumes:
   prometheus-data:
+  grafana-data:

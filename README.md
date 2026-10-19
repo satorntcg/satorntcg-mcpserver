@@ -185,13 +185,14 @@ Metrics use their own `MeterProvider` (`src/tracing.js`), whose resource is just
 
 ### Local Prometheus (OpenTelemetry Collector)
 
-`observability/docker-compose.yml` runs two containers, with every port bound to `127.0.0.1`:
+`observability/docker-compose.yml` runs three containers, with every port bound to `127.0.0.1`:
 
 | Service | Image | Host port | Role |
 |---|---|---|---|
 | `otel-collector` | `otel/opentelemetry-collector-contrib:0.161.0` | `4319` → OTLP/HTTP `4318` | Receives agent metrics (metrics pipeline only) |
 | | | `8889` | Prometheus exposition of the Collector's running totals |
 | `prometheus` | `prom/prometheus:v3.14.0` | `9090` | Scrapes `otel-collector:8889` every 15s |
+| `grafana` | `grafana/grafana:12.2.0` | `3000` | UI over Prometheus (provisioned data source, no dashboards yet) |
 
 **Traces don't go through the Collector.** The agent and MCP server keep exporting straight to the standalone Jaeger container on `4318` (below), which is why the Collector takes `4319`. Jaeger isn't in the Compose file, because it would collide with that container's name and ports.
 
@@ -239,6 +240,13 @@ Invoke-RestMethod "http://localhost:9090/api/v1/query?query=agent_tokens_input_t
 # Stop (add -v to also delete Prometheus' stored history)
 docker compose -f observability/docker-compose.yml down
 Remove-Item Env:OTEL_METRICS_EXPORTER
+```
+
+**Grafana.** Prometheus is provisioned as the default data source from `observability/grafana/provisioning/datasources/prometheus.yml`, at `http://prometheus:9090` (the Compose service name, not `localhost`, because Grafana's backend makes the request from inside its container). Log in at http://localhost:3000 as `admin` / `admin` (or `GRAFANA_ADMIN_PASSWORD`, which only applies the first time the `grafana-data` volume is created). To check the connection:
+
+```powershell
+$cred = New-Object PSCredential("admin", (ConvertTo-SecureString "admin" -AsPlainText -Force))
+Invoke-RestMethod http://localhost:3000/api/datasources/uid/prometheus/health -Credential $cred   # status: OK
 ```
 
 Or open http://localhost:9090 and try these queries:

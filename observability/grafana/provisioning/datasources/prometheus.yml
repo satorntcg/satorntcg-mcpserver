@@ -1,0 +1,20 @@
+# Grafana data source provisioning: Prometheus from this Compose stack.
+#
+# The URL uses the Compose service name, not localhost. Grafana's backend makes
+# these requests (access: proxy), and inside the grafana container "localhost"
+# is Grafana itself.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    # Managed by this file; edit here, not in the UI.
+    editable: false
+    jsonData:
+      # Matches scrape_interval in prometheus.yml, so $__rate_interval is sized correctly.
+      timeInterval: 15s
+      prometheusType: Prometheus
