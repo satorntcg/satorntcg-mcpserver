@@ -255,10 +255,10 @@ docker compose -f observability/docker-compose.yml down
 Remove-Item Env:OTEL_METRICS_EXPORTER
 ```
 
-**Grafana.** Prometheus is provisioned as the default data source from `observability/grafana/provisioning/datasources/prometheus.yml`, at `http://prometheus:9090` (the Compose service name, not `localhost`, because Grafana's backend makes the request from inside its container). Log in at http://localhost:3000 as `admin` / `admin` (or `GRAFANA_ADMIN_PASSWORD`, which only applies the first time the `grafana-data` volume is created). To check the connection:
+**Grafana.** Prometheus is provisioned as the default data source from `observability/grafana/provisioning/datasources/prometheus.yml`, at `http://prometheus:9090` (the Compose service name, not `localhost`, because Grafana's backend makes the request from inside its container). Log in at http://localhost:3000 as `admin` with Grafana's default password, which it asks you to change on first login. To choose the password up front instead, set `GRAFANA_ADMIN_PASSWORD` (shell or `.env`) before the first `up`; it only applies when the `grafana-data` volume is created. To check the connection (prompts for the password):
 
 ```powershell
-$cred = New-Object PSCredential("admin", (ConvertTo-SecureString "admin" -AsPlainText -Force))
+$cred = Get-Credential admin
 Invoke-RestMethod http://localhost:3000/api/datasources/uid/prometheus/health -Credential $cred   # status: OK
 ```
 

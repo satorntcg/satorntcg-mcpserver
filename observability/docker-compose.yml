@@ -43,9 +43,11 @@ services:
     image: grafana/grafana:12.2.0
     environment:
       GF_SECURITY_ADMIN_USER: admin
-      # Only applied the first time grafana-data is initialised. Default admin/admin
-      # (Grafana asks for a new password on first login); override via env/.env.
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Only applied the first time grafana-data is initialised. Left unset
+      # (empty), Grafana uses its built-in default password and asks for a new
+      # one on first login. Set GRAFANA_ADMIN_PASSWORD in the shell or .env to
+      # choose it up front.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_ANALYTICS_REPORTING_ENABLED: "false"
     volumes:
