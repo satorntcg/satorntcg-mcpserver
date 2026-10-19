@@ -145,6 +145,12 @@ export const DEFAULT_OTLP_METRICS_ENDPOINT = 'http://localhost:4319/v1/metrics';
 // src/tracing.js's shutdown. The interval only matters for very long runs.
 const EXPORT_INTERVAL_MS = 60000;
 
+// Per-export HTTP deadline, retries included. It sits below src/tracing.js's
+// 2000ms shutdown cap because that cap only stops waiting: without this, a hung
+// or 503ing Collector keeps the request (and so the process) alive for the
+// exporter's default 10s.
+export const OTLP_EXPORT_TIMEOUT_MS = 1500;
+
 // Picks the metric reader from the standard OTEL_METRICS_EXPORTER variable.
 // Returns undefined (no metrics SDK at all; instruments stay no-ops) when it is
 // unset, 'none', or unsupported.
@@ -172,7 +178,11 @@ export function createMetricReader(env = process.env, warn = (message) => consol
     const url = env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT?.trim() || DEFAULT_OTLP_METRICS_ENDPOINT;
     warn(`OpenTelemetry metrics active — exporting to ${url}`);
     return new sdkMetrics.PeriodicExportingMetricReader({
-      exporter: new OTLPMetricExporter({ url, temporalityPreference: AggregationTemporalityPreference.DELTA }),
+      exporter: new OTLPMetricExporter({
+        url,
+        temporalityPreference: AggregationTemporalityPreference.DELTA,
+        timeoutMillis: OTLP_EXPORT_TIMEOUT_MS,
+      }),
       exportIntervalMillis: EXPORT_INTERVAL_MS,
     });
   }

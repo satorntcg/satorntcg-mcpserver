@@ -12,11 +12,13 @@ import { runAgent } from '../agent/agentCore.js';
 import {
   DEFAULT_OTLP_METRICS_ENDPOINT,
   DURATION_BUCKETS_MS,
+  OTLP_EXPORT_TIMEOUT_MS,
   StderrMetricExporter,
   createAgentMetrics,
   createMetricReader,
 } from '../agent/agentMetrics.js';
 import { OUTCOMES, createRequestStats, traceAnthropic, traceMcp } from '../agent/agentTracing.js';
+import { startHungServer, startStatusServer } from './otlpTestServers.js';
 
 const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -339,4 +341,89 @@ test('otlp export sends delta metrics with only service.name as the resource, fl
   }
   const [inputPoint] = exported.get('agent.tokens.input').sum.dataPoints;
   assert.equal(Number(inputPoint.asInt ?? inputPoint.asDouble), 1296);
+});
+
+// Shutdown against a Collector that is up but not answering. The fake endpoints
+// (test/otlpTestServers.js) stand in for the Collector (metrics) and Jaeger
+// (traces); the child process gets real exporters via
+// createMetricReader()/initTracing().
+
+// Records one request's metrics and one span, then calls initTracing()'s
+// shutdown. exitAfterShutdown mirrors run-agent.js's signal handlers, which
+// call process.exit() as soon as the shutdown promise settles; without it the
+// child exits naturally, like a normal CLI run. Returns the child's wall time.
+async function runShutdownChild({ metricsUrl, tracesUrl, exitAfterShutdown = false }) {
+  const url = (file) => pathToFileURL(path.join(repoRoot, file)).href;
+  const script = `
+    const { initTracing } = await import(${JSON.stringify(url('src/tracing.js'))});
+    const { createAgentMetrics, createMetricReader } = await import(${JSON.stringify(url('agent/agentMetrics.js'))});
+    const { trace } = await import('@opentelemetry/api');
+    const shutdown = initTracing({ serviceName: 'satorntcg-agent', handleExit: false, metricReader: createMetricReader(process.env, () => {}) });
+    createAgentMetrics().startRequest('test-model').end('unknown');
+    trace.getTracer('test').startSpan('shutdown-test-span').end();
+    await shutdown();
+    ${exitAfterShutdown ? 'process.exit(0);' : ''}
+  `;
+  const startedAt = performance.now();
+  await promisify(execFile)(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: repoRoot, // so the child resolves @opentelemetry/api from this repo
+    env: {
+      PATH: process.env.PATH,
+      OTEL_METRICS_EXPORTER: 'otlp',
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: metricsUrl,
+      OTEL_EXPORTER_OTLP_ENDPOINT: tracesUrl,
+    },
+    timeout: 30000,
+  });
+  return performance.now() - startedAt;
+}
+
+// The exporter's default timeout is 10s. The child also spends up to a second
+// or so starting up, so anything under this means OTLP_EXPORT_TIMEOUT_MS applied.
+const PROMPT_EXIT_MS = 6000;
+
+test('the OTLP metric exporter times out below the 2s shutdown cap', () => {
+  assert.ok(OTLP_EXPORT_TIMEOUT_MS > 0 && OTLP_EXPORT_TIMEOUT_MS < 2000, `${OTLP_EXPORT_TIMEOUT_MS}ms`);
+});
+
+test('a hung metrics endpoint does not keep a naturally exiting process alive past the export timeout', async () => {
+  const collector = await startHungServer();
+  try {
+    const elapsed = await runShutdownChild({ metricsUrl: `${collector.origin}/v1/metrics`, tracesUrl: 'http://127.0.0.1:9/v1/traces' });
+    assert.equal(collector.connections(), 1, 'the metrics export should have reached the hung endpoint once');
+    assert.ok(elapsed < PROMPT_EXIT_MS, `process took ${Math.round(elapsed)}ms to exit`);
+  } finally {
+    collector.close();
+  }
+});
+
+test('a 503ing metrics endpoint stops retrying at the export timeout', async () => {
+  const collector = await startStatusServer(503);
+  try {
+    const elapsed = await runShutdownChild({ metricsUrl: `${collector.origin}/v1/metrics`, tracesUrl: 'http://127.0.0.1:9/v1/traces' });
+    // First attempt plus the retries that fit in 1.5s (backoff starts at ~1s).
+    // The default 10s deadline allows about 6.
+    assert.ok(collector.requests.length >= 1 && collector.requests.length <= 3, `${collector.requests.length} attempts`);
+    assert.ok(elapsed < PROMPT_EXIT_MS, `process took ${Math.round(elapsed)}ms to exit`);
+  } finally {
+    collector.close();
+  }
+});
+
+test('traces are exported at shutdown even while the metrics export is blocked', async () => {
+  const collector = await startHungServer();
+  const jaeger = await startStatusServer(200);
+  try {
+    // process.exit() right after the shutdown promise settles, like the signal
+    // handlers: the trace export has to happen inside the 2s window, not after
+    // the metrics export gives up.
+    await runShutdownChild({ metricsUrl: `${collector.origin}/v1/metrics`, tracesUrl: `${jaeger.origin}/v1/traces`, exitAfterShutdown: true });
+    assert.equal(collector.connections(), 1);
+    assert.equal(jaeger.requests.length, 1, 'expected exactly one trace export');
+    assert.equal(jaeger.requests[0].path, '/v1/traces');
+    assert.match(jaeger.requests[0].body, /shutdown-test-span/);
+  } finally {
+    collector.close();
+    jaeger.close();
+  }
 });

@@ -109,6 +109,15 @@ Each `db.query` child span carries `db.table` and, on success, `db.row_count`.
 
 Traces export over OTLP/HTTP to `OTEL_EXPORTER_OTLP_ENDPOINT` (defaults to `http://localhost:4318/v1/traces`, i.e. a local collector/Jaeger — see `.env.example`). Spans are flushed on shutdown (`SIGTERM`/`SIGINT`, or the client closing the server's stdin), so a normal Claude Desktop restart doesn't lose the last few tool calls; see `src/tracing.js` for the shutdown handling and the reasoning behind its timeout.
 
+**Shutdown timing.** The MCP server and the agent CLI both wait at most 2s (`SHUTDOWN_TIMEOUT_MS` in `src/tracing.js`) for spans, and the agent's metrics, to flush. That bounds the *wait*. It is **not a guaranteed deadline for the process to exit**:
+- **On `SIGTERM`/`SIGINT`** the process calls `process.exit()` as soon as the wait ends. It exits within about 2s, and anything still being sent is dropped.
+- **On a natural exit** (the CLI finishing, or the server's stdin closing), Node only exits once nothing is left running, including an export still in flight. So each trace export is capped at 1.5s, retries included (`TRACE_EXPORT_TIMEOUT_MS`; the OTLP default is 10s).
+  - Jaeger hung, or answering 429/502/503/504: exit happens about 1.5s late.
+  - Jaeger not running (connection refused): no delay.
+  - Either way, that run's spans are lost.
+- **`OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` or `OTEL_EXPORTER_OTLP_TIMEOUT`** (milliseconds) replaces the 1.5s default, e.g. for a slower remote backend. A value above 2000 lets a natural exit wait that long.
+- **The timeout covers every export**, including the batches the server sends every 5s while running. A local Jaeger answers in milliseconds; a batch that takes longer than 1.5s is dropped.
+
 ### Agent traces
 
 `agent/run-agent.js` exports its own spans (service **satorntcg-agent**, same exporter setup from `src/tracing.js`), one trace per run:
@@ -165,7 +174,7 @@ agent.request                                   request-level attributes (table 
 - `agent.outcome` is the same value as on the `agent.request` span (`error` or `unknown`; see above). An interrupted run is counted as `unknown`.
 - Labels are limited to the model ID, the outcome, and an allowlisted tool name. Any other name is recorded as `other`. The question, card names, argument values and request IDs are never used as labels.
 - A usage error (no question, no `ANTHROPIC_MODEL`) never starts a request, so it isn't counted.
-- **Flush on exit:** in `sdk-metrics` 1.x, shutting down a `PeriodicExportingMetricReader` does *not* export what was recorded since the last 60s interval. That's every metric from a CLI run. `shutdownTracing()` in `src/tracing.js` therefore calls `forceFlush()` on the reader first, within the same 2s cap. `test/agentMetrics.test.js` checks this in a child process.
+- **Flush on exit:** in `sdk-metrics` 1.x, shutting down a `PeriodicExportingMetricReader` does *not* export what was recorded since the last 60s interval. That's every metric from a CLI run. `shutdownTracing()` in `src/tracing.js` therefore calls `forceFlush()` on the reader before shutting it down. The trace flush runs at the same time, not after it, so a slow Collector can't hold up traces. `test/agentMetrics.test.js` checks both in child processes. For how long exit can take when the Collector misbehaves, see the limitations under [Local Prometheus](#local-prometheus-opentelemetry-collector).
 
 **Where metrics go.** Off by default. `OTEL_METRICS_EXPORTER` (the standard OTel variable) selects the exporter:
 - unset / `none`: no `MeterProvider` is registered, and the instruments are no-ops.
@@ -200,7 +209,11 @@ Metrics use their own `MeterProvider` (`src/tracing.js`), whose resource is just
 - **The totals live in Collector memory.** Restarting the Collector, or `docker compose down`, resets them to 0. Prometheus treats that as an ordinary counter reset, and its stored history survives in the `prometheus-data` volume.
 - **Idle series expire.** A series not updated for 168h (`max_stale` / `metric_expiration`) is dropped and starts again from 0 on its next run.
 - **`increase()` / `rate()` are approximate here.** Prometheus extrapolates across sparse samples, and doesn't count a series' first value as an increase. Over a short window, `sum(increase(agent_requests_total[1h]))` came out as 3.2 when the true number was 1. Use them for trends. For exact counts, read the counter itself: `sum(agent_requests_total)` is the total since the Collector started.
-- **Metrics from a run are lost** if the Collector is down when the run exits. The exporter fails quickly and the 2s shutdown cap still holds, but nothing is buffered on disk.
+- **Metrics from a run are lost** if the Collector is down, hung or returning errors when the run exits. Nothing is buffered on disk, and the failure is silent unless `OTEL_LOG_LEVEL=error` is set. How much later the CLI exits:
+  - **Collector down** (connection refused): no noticeable delay, the export fails at once.
+  - **Collector hung, or answering 429/502/503/504:** about 1.5s. The metric exporter's `timeoutMillis` (`OTLP_EXPORT_TIMEOUT_MS` in `agent/agentMetrics.js`) covers the request and its retries. The default would be 10s.
+  - **Traces still reach Jaeger** in both cases, because they're flushed alongside metrics rather than after them.
+- **The 2s shutdown wait isn't a process deadline** (see [Shutdown timing](#observability)). Traces and metrics time out separately and at the same time, so even with both the Collector and Jaeger hung, the CLI exits about 1.5s late.
 - `delta_to_cumulative` is an **alpha** Collector component.
 
 **Name and unit changes.** The Collector's Prometheus exporter rewrites OTel names:
