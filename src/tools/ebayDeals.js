@@ -303,6 +303,12 @@ export const findEbayDealsTool = {
       min_seller_feedback: numberProp('Skip sellers below this feedback percentage (sellers with no feedback are always skipped).', {
         default: DEFAULTS.min_seller_feedback,
       }),
+      exclude_sets: {
+        type: 'array',
+        items: { type: 'string' },
+        default: DEFAULTS.exclude_sets,
+        description: 'Set names never valued (titles naming them are skipped). Every other set, including newly added ones, is included.',
+      },
       record_seen: {
         type: 'boolean',
         default: DEFAULTS.record_seen,

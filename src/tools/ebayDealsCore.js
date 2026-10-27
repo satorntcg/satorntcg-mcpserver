@@ -25,6 +25,9 @@ export const DEFAULTS = {
   min_price: 3,
   min_seller_feedback: 97,
   record_seen: true,
+  // Sets never valued. Alpha is barely in the catalog (a few promos), so its listings
+  // can't be priced; any set not listed here, including new ones, is included.
+  exclude_sets: ['Alpha'],
 };
 
 export const MAX_ITEMS_LIMIT = 10000; // Browse API caps offset + limit at 10,000
@@ -63,6 +66,9 @@ export function parseFindEbayDealsArgs(args = {}) {
   }
   if (!Number.isInteger(out.max_items) || out.max_items < 1 || out.max_items > MAX_ITEMS_LIMIT) {
     throw new Error(`max_items must be an integer between 1 and ${MAX_ITEMS_LIMIT}.`);
+  }
+  if (!Array.isArray(out.exclude_sets) || !out.exclude_sets.every((s) => typeof s === 'string')) {
+    throw new Error('exclude_sets must be an array of set names.');
   }
   return out;
 }
@@ -145,7 +151,15 @@ export function buildCardIndex(rows) {
   // Longest first, so the first hit for a given position is the most specific name.
   const names = [...byBase.keys()].sort((a, b) => b.length - a.length);
   const sets = new Set(rows?.map((r) => r.set_name).filter(Boolean));
-  return { byBase, names, sets, skippedVariants };
+  // Every catalog set is recognised in titles by its own name, so a newly added set
+  // works without a code change; SET_ALIASES adds shorthands and untracked sets.
+  const aliasMap = new Map(SET_ALIASES);
+  for (const set of sets) {
+    const alias = normalize(set);
+    if (alias && !aliasMap.has(alias)) aliasMap.set(alias, set);
+  }
+  const setAliases = [...aliasMap].sort((a, b) => b[0].length - a[0].length);
+  return { byBase, names, sets, setAliases, skippedVariants };
 }
 
 // ---------------------------------------------------------------------------
@@ -194,13 +208,16 @@ const SEALED_WORDS = [
   'case', 'pack', 'packs', 'box', 'boxes', 'precon', 'preconstructed', 'starter deck',
   'starter kit', 'deck', 'blister', 'collector box', 'gift box', 'pledge kit',
 ];
-const GRADED_WORDS = ['psa', 'bgs', 'cgc', 'sgc', 'tag', 'beckett', 'graded', 'slab', 'slabbed', 'gem mint 10'];
+const GRADED_WORDS = ['psa', 'bgs', 'cgc', 'sgc', 'pcg', 'tag', 'beckett', 'graded', 'slab', 'slabbed', 'gem mint 10'];
 const LOT_WORDS = ['lot', 'lots', 'bundle', 'collection', 'bulk', 'complete set', 'full set', 'mixed', 'assorted', 'random'];
 
 const NUMBER_WORDS = { two: 2, three: 3, four: 4, five: 5, six: 6, eight: 8, ten: 10 };
 
 // Returns { quantity, unclear } — explicit markers only ("x2", "2x", "x 2", "playset",
-// "set of 4", "4 copies", "pair"). Conflicting markers → unclear.
+// "set of 4", "4 copies", "pair"). A numeric count beats the generic words: a big seller
+// titles listings "Name 2x PLAYSET Beta", priced at exactly market × 2 (checked against
+// ~200 live listings), so there "playset" is template text, not a count of 4.
+// Conflicting numeric counts → unclear.
 export function detectQuantity(normTitle) {
   const found = new Set();
   const add = (n) => {
@@ -215,8 +232,10 @@ export function detectQuantity(normTitle) {
   for (const m of normTitle.matchAll(/(?:^| )(\d{1,3}|two|three|four) (?:copies|copy|cards)(?= |$)/g)) {
     add(NUMBER_WORDS[m[1]] ?? m[1]);
   }
-  if (hasWord(normTitle, 'playset') || hasWord(normTitle, 'play set')) found.add(4);
-  if (hasWord(normTitle, 'pair')) found.add(2);
+  if (found.size === 0) {
+    if (hasWord(normTitle, 'playset') || hasWord(normTitle, 'play set')) found.add(4);
+    if (hasWord(normTitle, 'pair')) found.add(2);
+  }
   if (found.size === 0) return { quantity: 1, unclear: false };
   if (found.size > 1) return { quantity: null, unclear: true, candidates: [...found] };
   return { quantity: [...found][0], unclear: false };
@@ -324,7 +343,7 @@ export function classifyItem(item, index, opts, now = new Date()) {
 
   const namedSets = new Set();
   let remaining = rest;
-  for (const [alias, setName] of SET_ALIASES) {
+  for (const [alias, setName] of index.setAliases ?? SET_ALIASES) {
     if (hasWord(remaining, alias)) {
       namedSets.add(setName);
       remaining = remaining.replace(new RegExp(`(^| )${alias}(?= |$)`, 'g'), ' ');
@@ -335,7 +354,11 @@ export function classifyItem(item, index, opts, now = new Date()) {
   }
   const namedSet = [...namedSets][0] ?? null;
 
-  let printings = entry.printings.filter((p) => p.foil === foil);
+  const excluded = new Set((opts.exclude_sets ?? []).map((s) => s.toLowerCase()));
+  if (namedSet && excluded.has(namedSet.toLowerCase())) return skip('excluded_set');
+
+  // Excluded sets also never supply the fallback price when no set is named.
+  let printings = entry.printings.filter((p) => p.foil === foil && !excluded.has(String(p.set_name).toLowerCase()));
   if (namedSet) printings = printings.filter((p) => p.set_name === namedSet);
   if (printings.length === 0) {
     return {

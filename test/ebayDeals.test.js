@@ -78,6 +78,8 @@ test('quantity markers', () => {
   assert.deepEqual(detectQuantity('zap playset'), { quantity: 4, unclear: false });
   assert.deepEqual(detectQuantity('zap set of 4'), { quantity: 4, unclear: false });
   assert.equal(detectQuantity('zap x2 3x').unclear, true);
+  // explicit count beats the generic word ("2x PLAYSET" seller template = 2 copies)
+  assert.deepEqual(detectQuantity('zap 2x playset beta nm'), { quantity: 2, unclear: false });
   assert.deepEqual(detectQuantity('zap beta nm'), { quantity: 1, unclear: false });
 });
 
@@ -103,11 +105,30 @@ test('no set named → cheapest set, set_uncertain; named set must match', () =>
   assert.equal(beta.card.card_id, 'dt-b');
   assert.equal(beta.set_uncertain, false);
 
-  const alpha = classify('Sorcery Death Touch Alpha');
-  assert.equal(alpha.kind, 'unmatched');
-  assert.match(alpha.reason, /alpha/i);
+  const gothic = classify('Sorcery Death Touch Gothic');
+  assert.equal(gothic.kind, 'unmatched');
+  assert.match(gothic.reason, /gothic/i);
 
-  assert.equal(classify('Sorcery Death Touch Alpha Beta').kind, 'ambiguous');
+  assert.equal(classify('Sorcery Death Touch Gothic Beta').kind, 'ambiguous');
+});
+
+test('Alpha is excluded by default; exclude_sets is configurable', () => {
+  assert.equal(classify('Sorcery Death Touch Alpha').reason, 'excluded_set');
+  // excluded sets never supply the no-set-named fallback price
+  const noBeta = classify('Sorcery Death Touch', {}, { ...opts, exclude_sets: ['Arthurian Legends'] });
+  assert.equal(noBeta.card.card_id, 'dt-b');
+  assert.equal(noBeta.set_uncertain, false);
+  assert.equal(classify('Sorcery Death Touch Alpha', {}, { ...opts, exclude_sets: [] }).kind, 'unmatched');
+  assert.throws(() => parseFindEbayDealsArgs({ exclude_sets: 'Alpha' }), /exclude_sets/);
+});
+
+test('sets in the catalog are recognised without a code change', () => {
+  const idx = buildCardIndex([
+    { card_id: 'n1', name: 'Sky Whale', set_name: 'Brand New Set', foil: false, tcgplayer_market: 10 },
+    { card_id: 'n2', name: 'Sky Whale', set_name: 'Beta', foil: false, tcgplayer_market: 4 },
+  ]);
+  const c = classifyItem(item('Sorcery Sky Whale Brand New Set NM'), idx, opts, NOW);
+  assert.equal(c.card.card_id, 'n1');
 });
 
 test('skips, lots, graded and variants', () => {

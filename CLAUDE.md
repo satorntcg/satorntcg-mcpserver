@@ -26,6 +26,8 @@ Env vars (from `.env`, loaded by `src/env.js` via an absolute path — see `.env
 - Only standard printings are matchable: card rows whose name, minus a trailing ` (Foil)`, has no other `(...)` suffix. Promo/Box Topper/Misprint rows are ignored, and titles with variant words are reported as ambiguous instead of being valued at the regular card's price.
 - The card name is matched first, then every keyword check (skip words, sealed, lot, set, foil, quantity) runs on the title with the card name cut out, so a card name can't trip a keyword.
 - Foil comes from the ` (Foil)` name suffix as well as `cards.foil`, because a few rows disagree.
+- Sets: every `cards.set_name` is recognised in titles automatically (plus shorthands in `SET_ALIASES`), so a new set needs no code change. `exclude_sets` (default `["Alpha"]`, which is barely in the catalog) skips titles naming those sets and keeps them out of the no-set-named fallback price.
+- Quantity: an explicit count ("2x", "x2", "set of 3") beats generic words ("playset", "pair"). The biggest Sorcery seller titles listings "Name 2x PLAYSET Beta" and prices them at market × 2.
 
 ## Architecture
 
