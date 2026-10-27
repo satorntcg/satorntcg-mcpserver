@@ -17,6 +17,15 @@ Env vars (from `.env`, loaded by `src/env.js` via an absolute path — see `.env
 - `OTEL_EXPORTER_OTLP_ENDPOINT` — optional, defaults to `http://localhost:4318/v1/traces` (Jaeger)
 - `OTEL_METRICS_EXPORTER` — agent CLI only: `otlp` sends delta metrics to the Collector in `observability/` (`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, default `http://localhost:4319/v1/metrics`; port 4318 is Jaeger's); `console` prints them to stderr at exit; unset/`none` disables them. Metrics use their own MeterProvider with a `service.name`-only resource, so per-process attributes never become labels.
 - `TCGPLAYER_COOKIE` — only read when `print_packing_slip` runs
+- `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET` — only read when `find_ebay_deals` runs (production eBay keyset; `EBAY_APP_ID`/`EBAY_CERT_ID` are accepted as fallbacks, matching the Supabase Edge Function's names)
+- `npm run test:deals` (`scripts/test-deals.js`) — live smoke test of `find_ebay_deals` against real eBay + Supabase; prints totals, top deals, lots and sample ambiguous/unmatched titles. Doesn't record seen deals unless `--record` is passed. Not part of `npm test`.
+
+### find_ebay_deals
+
+`src/tools/ebayDeals.js` (I/O) + `src/tools/ebayDealsCore.js` (pure matching/profit logic, unit-tested in `test/ebayDeals.test.js`) + `src/ebayClient.js` (Browse API search and a cached client-credentials token). Unlike the other tools it isn't a view wrapper: it loads Sorcery cards from `v_latest_prices`, scans eBay, and writes returned deals to `ebay_deal_seen` (migration in the app repo: `supabase/migrations/20261027_ebay_deal_seen.sql`). Matching notes:
+- Only standard printings are matchable: card rows whose name, minus a trailing ` (Foil)`, has no other `(...)` suffix. Promo/Box Topper/Misprint rows are ignored, and titles with variant words are reported as ambiguous instead of being valued at the regular card's price.
+- The card name is matched first, then every keyword check (skip words, sealed, lot, set, foil, quantity) runs on the title with the card name cut out, so a card name can't trip a keyword.
+- Foil comes from the ` (Foil)` name suffix as well as `cards.foil`, because a few rows disagree.
 
 ## Architecture
 

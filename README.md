@@ -18,6 +18,7 @@ This started as a resume project to learn MCP server design and observability, a
 | `get_box_pnl` | Profit & loss per box (purchase price vs. realized/unrealized pull value) |
 | `get_global_pnl` | Overall business P&L across all boxes and listings |
 | `get_ebay_listings` | Active or sold eBay listings |
+| `find_ebay_deals` | Live eBay scan for Sorcery singles listed below TCGplayer market after resale costs (needs `EBAY_CLIENT_ID`/`EBAY_CLIENT_SECRET`; try it with `npm run test:deals`) |
 
 Each tool is a thin wrapper around a Postgres view — see `src/tools/`.
 

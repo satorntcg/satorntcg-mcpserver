@@ -8,6 +8,7 @@ import {
   getOrdersMissingListingsTool,
 } from './tcgplayerOrders.js';
 import { printPackingSlipTool } from './printPackingSlip.js';
+import { findEbayDealsTool } from './ebayDeals.js';
 import { debugNetworkTool } from './debugNetwork.js';
 
 // Add new tools here — this is the single place that wires a tool definition
@@ -23,5 +24,6 @@ export const tools = [
   createTcgplayerOrderTool,
   getOrdersMissingListingsTool,
   printPackingSlipTool,
+  findEbayDealsTool,
   debugNetworkTool, // TEMPORARY — remove once fetch-failed issue is resolved
 ];

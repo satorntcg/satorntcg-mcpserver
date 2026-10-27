@@ -18,6 +18,8 @@ const placeholderEnv = {
   SUPABASE_URL: 'http://127.0.0.1:9',
   SUPABASE_SERVICE_KEY: 'placeholder-not-a-real-key',
   TCGPLAYER_COOKIE: 'placeholder-not-a-real-cookie',
+  EBAY_CLIENT_ID: 'placeholder-not-a-real-id',
+  EBAY_CLIENT_SECRET: 'placeholder-not-a-real-secret',
   OTEL_SDK_DISABLED: 'true',
   OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:9/v1/traces',
 };
