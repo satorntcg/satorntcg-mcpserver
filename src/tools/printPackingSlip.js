@@ -6,9 +6,9 @@ import { supabase } from '../supabaseClient.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OUTPUT_DIR = path.join(__dirname, '..', '..', 'packing-slips');
 
-// Orders below this order_total print on a single #10 windowed-envelope slip;
+// Orders below this order_total (i.e. $49.99 and under) print on a single #10 windowed-envelope slip;
 // orders at or above it print the standard full-page format, per Chris's shipping process.
-const WINDOWED_ENVELOPE_THRESHOLD = 20;
+const WINDOWED_ENVELOPE_THRESHOLD = 50;
 
 // Calls TCGplayer's Seller Portal export API directly instead of driving a browser click.
 // A synthetic (CDP-dispatched) click on the portal's "Packing Slip" button stopped producing
