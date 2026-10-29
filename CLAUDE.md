@@ -29,6 +29,16 @@ Env vars (from `.env`, loaded by `src/env.js` via an absolute path — see `.env
 - Sets: every `cards.set_name` is recognised in titles automatically (plus shorthands in `SET_ALIASES`), so a new set needs no code change. `exclude_sets` (default `["Alpha"]`, which is barely in the catalog) skips titles naming those sets and keeps them out of the no-set-named fallback price.
 - Quantity: an explicit count ("2x", "x2", "set of 3") beats generic words ("playset", "pair"). The biggest Sorcery seller titles listings "Name 2x PLAYSET Beta" and prices them at market × 2.
 
+### Outbound HTTP retries (`src/httpRetry.js`)
+
+`fetchWithRetry(url, init, opts)` wraps `fetch` with bounded retries and one `http.client` span per logical request. Tested in `test/httpRetry.test.js` with a scripted fake fetch and an injected `sleep`/`random`/`now`, so tests never wait or touch the network.
+- Retries are **off unless `retry: true`**, and even then only GET/HEAD/OPTIONS are retried. Any other method gets exactly one attempt. Never turn retries on for a side-effecting call: `print_packing_slip`'s TCGplayer POST, `create_tcgplayer_order`, or the eBay OAuth token POST.
+- Retried: HTTP 429/502/503/504, the per-attempt timeout (`timeoutMs`, default 20s), and transient network codes (`ECONNRESET`, `ETIMEDOUT`, `EAI_AGAIN`, `EPIPE`, `UND_ERR_SOCKET`, `UND_ERR_CONNECT_TIMEOUT`, `UND_ERR_HEADERS_TIMEOUT`). Not retried: `ENOTFOUND`, `ECONNREFUSED`, TLS errors, a caller abort.
+- Defaults: 3 total attempts, full-jitter exponential backoff (500ms base), `maxDelayMs` 10s. `Retry-After` (seconds or HTTP date) replaces the backoff. If it asks for more than `maxDelayMs`, the wrapper stops and returns that response instead of retrying early. eBay's daily-quota 429 behaves like this.
+- It returns the final `Response` (ok or not) and throws only network errors, so callers keep their own `!res.ok` handling.
+- Span attributes: `http.request.method`, `server.address`, `url.path` (no query string), `http.response.status_code`, `http.request.resend_count`, `http.retry.outcome` (`success | http_error | exhausted | retry_after_exceeded | error | aborted`), `http.retry.total_elapsed_ms`. There is one `http.retry` event per retry (attempt, status or `error.type`, `delay_ms`, `delay_source`). Never add headers, bodies or full URLs to it: headers carry credentials, and a test checks they don't leak.
+- Only used by `ebayClient.js`'s `authedGet()` (Browse search and taxonomy GETs). `createEbayClient({ retryOptions })` passes options through, which tests use to inject a fake sleep.
+
 ## Architecture
 
 ESM Node project (`"type": "module"`). `src/index.js` imports `./env.js` first and then `./tracing.js` (import order matters; see the comments in both files). It registers `ListTools`/`CallTool` handlers on a low-level MCP `Server` and connects a `StdioServerTransport`. Every tool call is wrapped in a `tool.<name>` OpenTelemetry span, and each Supabase query inside it gets a `db.query` child span via `withDbSpan()` (`src/dbSpan.js`).

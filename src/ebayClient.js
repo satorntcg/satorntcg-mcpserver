@@ -1,10 +1,15 @@
 // Minimal eBay Browse API client: application-token OAuth (client credentials) plus
 // item_summary/search. No Supabase imports, so it can be tested with a fake fetch.
 //
+// The read-only GETs (search, taxonomy) go through fetchWithRetry() with retries on;
+// the token POST deliberately does not (see src/httpRetry.js).
+//
 // Credentials: EBAY_CLIENT_ID / EBAY_CLIENT_SECRET, falling back to EBAY_APP_ID /
 // EBAY_CERT_ID — the names the Supabase daily_price_check Edge Function already uses
 // for the same eBay app (that function's secrets live in Supabase, so they still have
 // to be copied into this server's .env).
+
+import { fetchWithRetry } from './httpRetry.js';
 
 const TOKEN_URL = 'https://api.ebay.com/identity/v1/oauth2/token';
 const SEARCH_URL = 'https://api.ebay.com/buy/browse/v1/item_summary/search';
@@ -42,7 +47,9 @@ async function ebayError(res, what) {
   return new Error(`eBay ${what} failed: HTTP ${res.status}${hint}${detail ? ` — ${detail}` : ''}`);
 }
 
-export function createEbayClient({ fetchImpl = fetch, env = process.env, now = () => Date.now() } = {}) {
+// retryOptions is passed through to fetchWithRetry() for the GETs (tests use it to
+// inject a fake sleep).
+export function createEbayClient({ fetchImpl = fetch, env = process.env, now = () => Date.now(), retryOptions = {} } = {}) {
   let cached = null; // { token, expiresAt }
 
   async function getToken() {
@@ -66,14 +73,18 @@ export function createEbayClient({ fetchImpl = fetch, env = process.env, now = (
 
   async function authedGet(url, what) {
     const token = await getToken();
-    const res = await fetchImpl(url, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-        Accept: 'application/json',
+    const res = await fetchWithRetry(
+      url,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
+          Accept: 'application/json',
+        },
       },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
+      { retry: true, fetchImpl, timeoutMs: REQUEST_TIMEOUT_MS, ...retryOptions }
+    );
     if (res.status === 401) cached = null; // token revoked/expired early; next call refreshes
     if (!res.ok) throw await ebayError(res, what);
     return res.json();
