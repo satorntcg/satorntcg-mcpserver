@@ -8,6 +8,15 @@ Built on top of [SatornTCG](https://satorntcg.com), a Sorcery: Contested Realm r
 
 This started as a resume project to learn MCP server design and observability, and turned into a tool I actually use day to day to query my own inventory and pricing data conversationally instead of clicking through a UI.
 
+## Highlights
+
+- **11 MCP tools** over live business data (inventory, pricing, P&L, eBay listings, TCGplayer order sync, eBay deal scanning), each with a JSON input schema and server-side validation.
+- **Guardrailed agent runner** on the Claude API: read-only tool allowlist, argument checks against each tool's schema before every call, and a cap on tool rounds.
+- **OpenTelemetry end to end**: every tool call is a span with a child span per database query, slow calls are flagged, and trace context flows from agent to server through MCP request metadata. Traces go to Jaeger, and agent metrics go to Prometheus and Grafana.
+- **Tests and evals**: Node test runner suite (unit, MCP integration, tracing, retry), plus a live Claude tool-selection eval that also checks direct-answer, clarification, and refusal cases.
+
+Author: Christopher Rogers. Portfolio: [crogers.dev](https://www.crogers.dev)
+
 ## What it exposes
 
 | Tool | Description |
@@ -19,8 +28,12 @@ This started as a resume project to learn MCP server design and observability, a
 | `get_global_pnl` | Overall business P&L across all boxes and listings |
 | `get_ebay_listings` | Active or sold eBay listings |
 | `find_ebay_deals` | Live eBay scan for Sorcery singles listed below TCGplayer market after resale costs (needs `EBAY_CLIENT_ID`/`EBAY_CLIENT_SECRET`; try it with `npm run test:deals`) |
+| `get_tcgplayer_orders` | TCGplayer orders synced from sale-notification emails, filterable by status or order number |
+| `create_tcgplayer_order` | Records a TCGplayer order and its line items (write tool) |
+| `get_orders_missing_listings` | Reconciliation: orders with no matching listing in the app |
+| `print_packing_slip` | Generates a TCGplayer packing-slip PDF for an order |
 
-Each tool is a thin wrapper around a Postgres view — see `src/tools/`.
+Most tools are thin wrappers around a Postgres view — see `src/tools/`.
 
 ## Architecture
 
